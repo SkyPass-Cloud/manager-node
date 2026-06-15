@@ -67,16 +67,19 @@ func EnsureACME(ctx context.Context, accountEmail string) error {
 	if err := os.MkdirAll(acmeHome, 0o700); err != nil {
 		return fmt.Errorf("create acme home %s: %w", acmeHome, err)
 	}
-	// Bootstrap acme.sh INTO our writable home. The get.acme.sh online installer
-	// does NOT reliably accept --home through the pipe (that's the git/--install
-	// path), but it DOES honour the LE_WORKING_DIR / LE_CONFIG_HOME env vars,
-	// which runCtx exports. Without them acme.sh defaults to /root/.acme.sh, which
-	// is a read-only tmpfs inside the hardened service (ProtectHome=true), causing
-	// "cannot create /root/.acme.sh: Read-only file system". email= is the
-	// installer's accepted key=value form; --nocron is honoured by get.acme.sh.
-	script := fmt.Sprintf("curl -fsSL https://get.acme.sh | sh -s -- --nocron email=%s", shellQuote(email))
+	// Bootstrap acme.sh INTO our writable home. How the get.acme.sh wrapper parses
+	// args (verified against the actual script):
+	//   _email="$1"; if set -> "--email <value>"; THEN: ... | sh -s -- --install-online $_email "$@"
+	// So the FIRST token must be `email=<addr>` (it strips `=` and prepends `--`),
+	// and any further tokens (e.g. --nocron) are passed through to acme.sh --install
+	// verbatim. Our earlier `sh -s -- --nocron email=...` produced "----nocron"
+	// because email= was not first. acme.sh --install honours the LE_WORKING_DIR
+	// env var (exported by runCtx) for the install location, so it lands in
+	// /etc/skypassd/acme rather than the read-only /root/.acme.sh. --nocron skips
+	// the crontab write (which would fail under the hardened sandbox anyway).
+	script := fmt.Sprintf("curl -fsSL https://get.acme.sh | sh -s email=%s --nocron", shellQuote(email))
 	if _, err := exec.LookPath("curl"); err != nil {
-		script = fmt.Sprintf("wget -qO- https://get.acme.sh | sh -s -- --nocron email=%s", shellQuote(email))
+		script = fmt.Sprintf("wget -qO- https://get.acme.sh | sh -s email=%s --nocron", shellQuote(email))
 	}
 	out, err := runCtx(ctx, 3*time.Minute, "/bin/sh", "-c", script)
 	if err != nil {
