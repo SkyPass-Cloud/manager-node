@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,6 +19,12 @@ import (
 var version = "dev"
 
 func main() {
+	// Tag every log line with [node-manager] so the agent's journald output can
+	// be filtered alongside the server side with the same grep token:
+	//   journalctl -u skypassd | grep node-manager
+	log.SetPrefix("[node-manager] ")
+	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
