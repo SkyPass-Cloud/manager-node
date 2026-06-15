@@ -261,11 +261,20 @@ func grabAccessURL(blob string) string {
 	return ""
 }
 
+// ansiRe matches ANSI/VT100 escape sequences (colour codes etc.). The 3x-ui CLI
+// colourises its output, so e.g. the "Access URL:" line ends with a reset code
+// (ESC[0m). Left in, that leaks into parsed fields as literal "\x1b[0m" / "[0m".
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
+
 func run(ctx context.Context, timeout time.Duration, name string, args ...string) (string, error) {
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, name, args...)
 	cmd.Env = append(os.Environ(), "HOME=/root")
 	out, err := cmd.CombinedOutput()
-	return string(out), err
+	// Strip colour codes so downstream parsing (Access URL, port, cert paths)
+	// never sees escape sequences regardless of whether the CLI forced colour.
+	return stripANSI(string(out)), err
 }
