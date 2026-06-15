@@ -1,0 +1,42 @@
+name: release
+
+# Builds the Linux binaries and attaches them to a GitHub Release whenever you
+# push a version tag like v1.0.0. You never build on your own server.
+#
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# The release then has these assets (the names install.sh expects):
+#   skypassd-linux-amd64
+#   skypassd-linux-arm64
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed to create the Release and upload assets
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build linux binaries
+        run: |
+          chmod +x ./build.sh
+          ./build.sh "${GITHUB_REF_NAME}"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/skypassd-linux-amd64
+            dist/skypassd-linux-arm64
+          generate_release_notes: true

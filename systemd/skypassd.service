@@ -1,0 +1,21 @@
+[Unit]
+Description=SkyPass node agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/skypassd run --config /etc/skypassd/config.json
+Restart=always
+RestartSec=5
+# Run as root: the agent opens firewall ports and may run privileged setup
+# commands the site pushes. Tighten if your action set never needs root.
+User=root
+# Basic hardening that still allows the agent to manage the host.
+NoNewPrivileges=false
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/skypassd
+
+[Install]
+WantedBy=multi-user.target

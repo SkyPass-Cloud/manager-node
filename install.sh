@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# skypassd installer.
+#
+# Usage (the website runs this over SSH on the user's VPS):
+#   curl -fsSL https://raw.githubusercontent.com/SkyPass-Cloud/manager-node/main/install.sh \
+#     | bash -s -- --site https://api.skypass.cloud --token <NODE_TOKEN> \
+#         --binary-url 'https://github.com/SkyPass-Cloud/manager-node/releases/latest/download/skypassd-linux-{arch}'
+#
+# It downloads the matching binary from GitHub Releases, installs it to
+# /usr/local/bin, writes config + opens the firewall (skypassd install),
+# then installs and starts the systemd unit.
+set -euo pipefail
+
+BIN_DIR="/usr/local/bin"
+BIN_PATH="${BIN_DIR}/skypassd"
+CONFIG_DIR="/etc/skypassd"
+UNIT_PATH="/etc/systemd/system/skypassd.service"
+
+SITE=""
+TOKEN=""
+ACME_EMAIL=""
+# BINARY_URL is the direct download URL for the prebuilt Linux binary. The
+# website backend passes it (sourced from its own SKYPASS_NODE_BINARY_URL
+# env var) so the GitHub location is configurable and never hardcoded here.
+BINARY_URL="${SKYPASS_NODE_BINARY_URL:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --site)       SITE="$2"; shift 2 ;;
+    --token)      TOKEN="$2"; shift 2 ;;
+    --binary-url) BINARY_URL="$2"; shift 2 ;;
+    --acme-email) ACME_EMAIL="$2"; shift 2 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [[ -z "$SITE" || -z "$TOKEN" ]]; then
+  echo "error: --site and --token are required" >&2
+  exit 2
+fi
+if [[ -z "$BINARY_URL" ]]; then
+  echo "error: --binary-url (or SKYPASS_NODE_BINARY_URL) is required" >&2
+  exit 2
+fi
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  echo "error: must run as root" >&2
+  exit 1
+fi
+
+# The backend may template {arch} into the URL so one env var serves both
+# architectures. If present, substitute it; otherwise use the URL verbatim.
+case "$(uname -m)" in
+  x86_64|amd64) ARCH="amd64" ;;
+  aarch64|arm64) ARCH="arm64" ;;
+  *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+esac
+URL="${BINARY_URL//\{arch\}/$ARCH}"
+
+echo "==> downloading binary from ${URL}"
+TMP="$(mktemp)"
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$URL" -o "$TMP"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$TMP" "$URL"
+else
+  echo "error: need curl or wget" >&2
+  exit 1
+fi
+
+echo "==> installing binary to ${BIN_PATH}"
+install -m 0755 "$TMP" "$BIN_PATH"
+rm -f "$TMP"
+
+echo "==> writing config and opening firewall"
+mkdir -p "$CONFIG_DIR"
+chmod 700 "$CONFIG_DIR"
+INSTALL_ARGS=(--site "$SITE" --token "$TOKEN")
+[[ -n "$ACME_EMAIL" ]] && INSTALL_ARGS+=(--acme-email "$ACME_EMAIL")
+"$BIN_PATH" install "${INSTALL_ARGS[@]}"
+
+echo "==> installing systemd unit"
+cat > "$UNIT_PATH" <<'UNIT'
+[Unit]
+Description=SkyPass node agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/skypassd run --config /etc/skypassd/config.json
+Restart=always
+RestartSec=5
+User=root
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/skypassd
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable skypassd
+systemctl restart skypassd
+
+echo "==> done. status:"
+systemctl --no-pager status skypassd || true

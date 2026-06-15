@@ -1,0 +1,5 @@
+# Shell scripts and the systemd unit must keep LF endings so they run on Linux.
+*.sh        text eol=lf
+*.service   text eol=lf
+install.sh  text eol=lf
+build.sh    text eol=lf
