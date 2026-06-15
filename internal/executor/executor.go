@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -125,8 +126,10 @@ func (e *Executor) Run(ctx context.Context, cmd api.Command) Result {
 		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
 			return fail("bad payload: %v", err)
 		}
-		if _, err := xui.Install(ctx, p.Version); err != nil {
-			return fail("%v", err)
+		if out, err := xui.Install(ctx, p.Version); err != nil {
+			// Surface the installer's own output (tail) so the site/user sees WHY it
+			// failed, not just "exit status 1".
+			return Result{OK: false, Output: tail(out, 1500), Err: err.Error()}
 		}
 		if p.Username != "" && p.Password != "" {
 			if out, err := xui.SetCredentials(ctx, p.Username, p.Password); err != nil {
@@ -295,6 +298,16 @@ func errIfNonZero(r *sshexec.Result) string {
 }
 
 func mustJSON(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
+
+// tail returns the last n bytes of s, so long installer logs don't flood the UI
+// while still showing the part that usually contains the error.
+func tail(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return "..." + s[len(s)-n:]
+}
 
 func (e *Executor) runShell(ctx context.Context, raw json.RawMessage) Result {
 	var p struct {

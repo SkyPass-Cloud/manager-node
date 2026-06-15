@@ -90,6 +90,37 @@ rm -f "$TMP"
 # Keep the friendly alias in sync.
 ln -sf "$BIN_PATH" /usr/local/bin/skypass-manager
 
+# Refresh the systemd unit (NOT config). Older units shipped with
+# ProtectSystem=full / ProtectHome=true, which make /usr and /root read-only
+# inside the sandbox and break the 3x-ui and acme.sh installers. Rewrite the unit
+# without that sandboxing so panel/SSL installs work. ExecStart/paths unchanged.
+UNIT_PATH="/etc/systemd/system/skypassd.service"
+if [[ -f "$UNIT_PATH" ]]; then
+  echo "==> refreshing systemd unit (removing read-only sandbox)"
+  cat > "$UNIT_PATH" <<'UNIT'
+[Unit]
+Description=SkyPass node agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/skypassd run --config /etc/skypassd/config.json
+Restart=always
+RestartSec=5
+# Host manager: installs system services (3x-ui, acme.sh, packages). The
+# ProtectSystem/ProtectHome sandbox is intentionally OFF — with it on the 3x-ui
+# installer fails on read-only /usr and acme.sh fails on read-only /root.
+User=root
+ProtectSystem=false
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  systemctl daemon-reload || true
+fi
+
 echo "==> restarting ${SERVICE}"
 systemctl restart "$SERVICE" || true
 

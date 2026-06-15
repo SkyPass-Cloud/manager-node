@@ -8,14 +8,17 @@ Type=simple
 ExecStart=/usr/local/bin/skypassd run --config /etc/skypassd/config.json
 Restart=always
 RestartSec=5
-# Run as root: the agent opens firewall ports and may run privileged setup
-# commands the site pushes. Tighten if your action set never needs root.
+# Run as root: the agent is a host manager. It installs system services (3x-ui
+# under /usr/local + /etc/systemd, acme.sh, packages), opens firewall ports, and
+# runs privileged setup the site pushes. Those tasks need full write access to
+# the host, so the ProtectSystem/ProtectHome sandboxing is intentionally OFF —
+# with it on, the 3x-ui installer fails (read-only /usr) and acme.sh fails
+# (read-only /root). Do not re-enable without ReadWritePaths for every path the
+# managed installers touch.
 User=root
-# Basic hardening that still allows the agent to manage the host.
 NoNewPrivileges=false
-ProtectSystem=full
-ProtectHome=true
-ReadWritePaths=/etc/skypassd
+ProtectSystem=false
+ProtectHome=false
 
 [Install]
 WantedBy=multi-user.target

@@ -123,10 +123,13 @@ Type=simple
 ExecStart=/usr/local/bin/skypassd run --config /etc/skypassd/config.json
 Restart=always
 RestartSec=5
+# Host manager: installs system services (3x-ui under /usr/local + /etc/systemd,
+# acme.sh, packages) and runs privileged setup. The ProtectSystem/ProtectHome
+# sandbox is intentionally OFF — with it on the 3x-ui installer fails on
+# read-only /usr and acme.sh fails on read-only /root.
 User=root
-ProtectSystem=full
-ProtectHome=true
-ReadWritePaths=/etc/skypassd
+ProtectSystem=false
+ProtectHome=false
 
 [Install]
 WantedBy=multi-user.target
