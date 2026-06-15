@@ -39,6 +39,22 @@ case "$(uname -m)" in
 esac
 URL="${BINARY_URL//\{arch\}/$ARCH}"
 
+# Ensure acme.sh's runtime deps exist while we are real root (the service runs
+# under ProtectSystem=full where package installs fail). Best-effort, idempotent.
+if ! command -v socat >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+  echo "==> installing dependencies (curl, socat)"
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -y || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y curl socat ca-certificates || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y curl socat ca-certificates || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y curl socat ca-certificates || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache curl socat ca-certificates openssl || true
+  fi
+fi
+
 echo "==> downloading latest binary from ${URL}"
 TMP="$(mktemp)"
 if command -v curl >/dev/null 2>&1; then

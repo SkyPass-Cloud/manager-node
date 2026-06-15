@@ -11,11 +11,15 @@ import (
 	"time"
 )
 
-// acme.sh is installed per-user under ~/.acme.sh. The agent runs as root, so
-// HOME is /root. This mirrors how 3x-ui issues certs.
+// acme.sh is installed UNDER /etc/skypassd, NOT the default /root/.acme.sh.
+// Reason: the systemd unit hardens the sandbox with ProtectHome=true /
+// ProtectSystem=full, which makes /root a read-only tmpfs inside the service —
+// so acme.sh's default install fails with "cannot create /root/.acme.sh:
+// Read-only file system". /etc/skypassd is listed in the unit's ReadWritePaths,
+// so installing acme.sh there works inside the sandbox without weakening it.
 const (
-	acmeHome  = "/root/.acme.sh"
-	acmeBin   = "/root/.acme.sh/acme.sh"
+	acmeHome  = "/etc/skypassd/acme"
+	acmeBin   = "/etc/skypassd/acme/acme.sh"
 	certsRoot = "/etc/skypassd/certs"
 )
 
@@ -58,12 +62,21 @@ func EnsureACME(ctx context.Context, accountEmail string) error {
 	if email == "" {
 		email = "admin@" + hostnameOrLocal()
 	}
-	// Prefer the official one-line bootstrap; fall back to wget if curl is absent.
-	var script string
-	if _, err := exec.LookPath("curl"); err == nil {
-		script = fmt.Sprintf("curl -fsSL https://get.acme.sh | sh -s email=%s", shellQuote(email))
-	} else {
-		script = fmt.Sprintf("wget -qO- https://get.acme.sh | sh -s email=%s", shellQuote(email))
+	// Make sure the writable install dir exists (it lives under /etc/skypassd,
+	// which the systemd sandbox grants RW via ReadWritePaths).
+	if err := os.MkdirAll(acmeHome, 0o700); err != nil {
+		return fmt.Errorf("create acme home %s: %w", acmeHome, err)
+	}
+	// Bootstrap acme.sh INTO our writable home. The get.acme.sh online installer
+	// does NOT reliably accept --home through the pipe (that's the git/--install
+	// path), but it DOES honour the LE_WORKING_DIR / LE_CONFIG_HOME env vars,
+	// which runCtx exports. Without them acme.sh defaults to /root/.acme.sh, which
+	// is a read-only tmpfs inside the hardened service (ProtectHome=true), causing
+	// "cannot create /root/.acme.sh: Read-only file system". email= is the
+	// installer's accepted key=value form; --nocron is honoured by get.acme.sh.
+	script := fmt.Sprintf("curl -fsSL https://get.acme.sh | sh -s -- --nocron email=%s", shellQuote(email))
+	if _, err := exec.LookPath("curl"); err != nil {
+		script = fmt.Sprintf("wget -qO- https://get.acme.sh | sh -s -- --nocron email=%s", shellQuote(email))
 	}
 	out, err := runCtx(ctx, 3*time.Minute, "/bin/sh", "-c", script)
 	if err != nil {
@@ -295,7 +308,15 @@ func runCtx(ctx context.Context, timeout time.Duration, name string, args ...str
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, name, args...)
-	cmd.Env = append(os.Environ(), "HOME=/root", "LE_WORKING_DIR="+acmeHome)
+	// Point acme.sh at our writable home in every way it looks for it: HOME (the
+	// bootstrap installer uses it), LE_WORKING_DIR and LE_CONFIG_HOME (the acme.sh
+	// binary uses these). HOME=acmeHome — NOT /root — because /root is read-only
+	// inside the systemd sandbox (ProtectHome/ProtectSystem).
+	cmd.Env = append(os.Environ(),
+		"HOME="+acmeHome,
+		"LE_WORKING_DIR="+acmeHome,
+		"LE_CONFIG_HOME="+acmeHome,
+	)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
