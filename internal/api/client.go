@@ -65,6 +65,44 @@ type HeartbeatRequest struct {
 	Status     system.Status `json:"status"`
 }
 
+// --- SSH handler role -------------------------------------------------------
+
+// HandlerRegisterRequest announces an ssh-handler to the site.
+type HandlerRegisterRequest struct {
+	AgentID    string `json:"agentId"`
+	ListenPort int    `json:"listenPort"`
+	Version    string `json:"version"`
+}
+
+// HandlerRegisterResponse carries the handler identity the site assigns.
+type HandlerRegisterResponse struct {
+	HandlerID string `json:"handlerId"`
+}
+
+// HandlerHeartbeatRequest reports the handler's live load + status.
+type HandlerHeartbeatRequest struct {
+	AgentID    string        `json:"agentId"`
+	HandlerID  string        `json:"handlerId"`
+	ListenPort int           `json:"listenPort"`
+	ActiveJobs int           `json:"activeJobs"`
+	Status     system.Status `json:"status"`
+}
+
+// RegisterHandler announces this ssh-handler to the site.
+func (c *Client) RegisterHandler(ctx context.Context, req HandlerRegisterRequest) (*HandlerRegisterResponse, error) {
+	var resp HandlerRegisterResponse
+	if err := c.do(ctx, http.MethodPost, "/api/handlers/register", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// HandlerHeartbeat reports load/status. Handlers receive jobs via pushed
+// commands on their local HTTP server, so no commands are pulled here.
+func (c *Client) HandlerHeartbeat(ctx context.Context, req HandlerHeartbeatRequest) error {
+	return c.do(ctx, http.MethodPost, "/api/handlers/heartbeat", req, nil)
+}
+
 // Command is a unit of work the site wants the node to perform. The Payload is
 // left opaque here; the executor package decides how to interpret each Type.
 type Command struct {

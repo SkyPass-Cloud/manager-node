@@ -19,6 +19,7 @@ UNIT_PATH="/etc/systemd/system/skypassd.service"
 SITE=""
 TOKEN=""
 ACME_EMAIL=""
+ROLE="node"
 # BINARY_URL is the direct download URL for the prebuilt Linux binary. The
 # website backend passes it (sourced from its own SKYPASS_NODE_BINARY_URL
 # env var) so the GitHub location is configurable and never hardcoded here.
@@ -30,6 +31,7 @@ while [[ $# -gt 0 ]]; do
     --token)      TOKEN="$2"; shift 2 ;;
     --binary-url) BINARY_URL="$2"; shift 2 ;;
     --acme-email) ACME_EMAIL="$2"; shift 2 ;;
+    --role)       ROLE="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -75,7 +77,7 @@ rm -f "$TMP"
 echo "==> writing config and opening firewall"
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
-INSTALL_ARGS=(--site "$SITE" --token "$TOKEN")
+INSTALL_ARGS=(--site "$SITE" --token "$TOKEN" --role "$ROLE")
 [[ -n "$ACME_EMAIL" ]] && INSTALL_ARGS+=(--acme-email "$ACME_EMAIL")
 "$BIN_PATH" install "${INSTALL_ARGS[@]}"
 

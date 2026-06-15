@@ -76,10 +76,15 @@ func cmdInstall(args []string) {
 	path := fs.String("config", config.DefaultPath, "config file path")
 	port := fs.Int("port", 0, "force a specific port (must be in allowed ranges)")
 	acmeEmail := fs.String("acme-email", "", "contact email for Let's Encrypt")
+	role := fs.String("role", "node", "role: 'node' (manage this VPS) or 'ssh-handler' (install onto other VPSes)")
 	_ = fs.Parse(args)
 
 	if *site == "" || *token == "" {
 		fmt.Fprintln(os.Stderr, "install: --site and --token are required")
+		os.Exit(2)
+	}
+	if *role != "node" && *role != "ssh-handler" {
+		fmt.Fprintf(os.Stderr, "install: --role must be 'node' or 'ssh-handler', got %q\n", *role)
 		os.Exit(2)
 	}
 
@@ -89,6 +94,10 @@ func cmdInstall(args []string) {
 	}
 	cfg.SiteBaseURL = *site
 	cfg.Token = *token
+	// "node" is the default; only persist a non-default role.
+	if *role == "ssh-handler" {
+		cfg.Role = "ssh-handler"
+	}
 	if *acmeEmail != "" {
 		cfg.AcmeEmail = *acmeEmail
 	}
@@ -122,7 +131,7 @@ func cmdInstall(args []string) {
 		fmt.Printf("firewall (%s): opened port %d/tcp\n", backend, cfg.ListenPort)
 	}
 
-	fmt.Printf("installed: agentId=%s port=%d config=%s\n", cfg.AgentID, cfg.ListenPort, cfg.Path())
+	fmt.Printf("installed: role=%s agentId=%s port=%d config=%s\n", *role, cfg.AgentID, cfg.ListenPort, cfg.Path())
 }
 
 func cmdRun(args []string) {

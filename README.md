@@ -70,13 +70,40 @@ This downloads the binary, installs to `/usr/local/bin/skypassd`, writes
 `/etc/skypassd/config.json`, opens the firewall port, and enables the
 systemd service.
 
+## Roles: node vs ssh-handler
+
+The same binary runs in two roles, chosen with `--role` at install:
+
+- `--role node` (default): manages the VPS it runs on (SSL + 3x-ui panel).
+- `--role ssh-handler`: a dedicated server that accepts `ssh.install` jobs from
+  the site and SSHes into *target* user VPSes to install the node agent on them.
+  The site load-balances installs across all online handlers (least-loaded,
+  per-handler `maxConcurrent` cap). Add a handler in Admin → Settings → "SSH
+  handler", which mints a token; then install on the handler server:
+
+```bash
+curl -fsSL <INSTALL_SH_URL> | bash -s -- \
+    --site https://api.skypass.cloud \
+    --token <HANDLER_TOKEN> \
+    --binary-url '<BINARY_URL>' \
+    --role ssh-handler
+```
+
+A handler registers at `/api/handlers/register` and heartbeats its live job
+load at `/api/handlers/heartbeat`.
+
 ## Site API the agent expects
 
-The node calls these on the site (add them to the server):
+A node (`--role node`) calls:
 
 - `POST /api/nodes/register`        -> `{ nodeId, token? }`
 - `POST /api/nodes/heartbeat`       -> `{ commands: [...] }`
 - `POST /api/nodes/command-result`  -> 2xx
+
+An ssh-handler (`--role ssh-handler`) calls:
+
+- `POST /api/handlers/register`     -> `{ handlerId }`
+- `POST /api/handlers/heartbeat`    -> 2xx (body reports `activeJobs`)
 
 The site can also call the node directly:
 

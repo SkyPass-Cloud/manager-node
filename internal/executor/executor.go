@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sync/atomic"
 	"time"
 
 	"github.com/SkyPass-Cloud/manager-node/internal/api"
+	"github.com/SkyPass-Cloud/manager-node/internal/sshexec"
 	"github.com/SkyPass-Cloud/manager-node/internal/ssl"
 	"github.com/SkyPass-Cloud/manager-node/internal/system"
 	"github.com/SkyPass-Cloud/manager-node/internal/xui"
@@ -15,16 +17,23 @@ import (
 
 // Executor runs commands the site sends. Each command Type maps to a host
 // capability: SSL (acme.sh) or panel (3x-ui) management, plus diagnostics.
+// In ssh-handler mode it also runs ssh.install jobs against target VPSes.
 type Executor struct {
 	version string
 	// acmeEmail is used when registering with Let's Encrypt. Set from config.
 	acmeEmail string
+	// activeJobs counts in-flight ssh.install jobs so the handler can report its
+	// live load to the site on each heartbeat (for load balancing).
+	activeJobs int64
 }
 
 // New returns an executor.
 func New(version string) *Executor {
 	return &Executor{version: version}
 }
+
+// ActiveJobs returns the number of ssh.install jobs currently running.
+func (e *Executor) ActiveJobs() int { return int(atomic.LoadInt64(&e.activeJobs)) }
 
 // SetACMEEmail sets the email acme.sh registers with.
 func (e *Executor) SetACMEEmail(email string) { e.acmeEmail = email }
@@ -208,6 +217,10 @@ func (e *Executor) Run(ctx context.Context, cmd api.Command) Result {
 		}
 		return ok("restarted")
 
+	// ── SSH handler: install the node agent onto a target VPS ────────────────
+	case "ssh.install":
+		return e.runSSHInstall(ctx, cmd.Payload)
+
 	// ── Raw shell (privileged; only the authenticated site can send it) ──────
 	case "shell":
 		return e.runShell(ctx, cmd.Payload)
@@ -216,6 +229,72 @@ func (e *Executor) Run(ctx context.Context, cmd api.Command) Result {
 		return fail("unknown command type %q", cmd.Type)
 	}
 }
+
+// runSSHInstall is the ssh-handler's core job: SSH into a target VPS and run the
+// install command the site supplies. The site builds the exact command (it holds
+// the per-node token and install URLs); the handler just executes it over SSH and
+// returns the exit code + output so the site can decide success/retry.
+func (e *Executor) runSSHInstall(ctx context.Context, raw json.RawMessage) Result {
+	var p struct {
+		Host           string `json:"host"`
+		Port           int    `json:"port"`
+		User           string `json:"user"`
+		Password       string `json:"password"`
+		Command        string `json:"command"`
+		ConnectTimeout int    `json:"connectTimeoutSec"`
+		RunTimeout     int    `json:"runTimeoutSec"`
+	}
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fail("bad ssh.install payload: %v", err)
+	}
+	if p.Host == "" || p.Password == "" || p.Command == "" {
+		return fail("ssh.install requires host, password and command")
+	}
+	if p.User == "" {
+		p.User = "root"
+	}
+	connectTimeout := time.Duration(p.ConnectTimeout) * time.Second
+	if connectTimeout <= 0 || connectTimeout > 2*time.Minute {
+		connectTimeout = 30 * time.Second
+	}
+	runTimeout := time.Duration(p.RunTimeout) * time.Second
+	if runTimeout <= 0 || runTimeout > 30*time.Minute {
+		runTimeout = 15 * time.Minute
+	}
+
+	atomic.AddInt64(&e.activeJobs, 1)
+	defer atomic.AddInt64(&e.activeJobs, -1)
+
+	res, err := sshexec.Run(ctx, p.Host, p.Port, p.User, p.Password, p.Command, connectTimeout, runTimeout)
+	if err != nil {
+		// Transport/auth/timeout failure: no exit code. Surface the error so the
+		// site treats it as transient (box not up yet) and retries.
+		out := ""
+		if res != nil {
+			out = res.Stderr + res.Stdout
+		}
+		return Result{OK: false, Output: out, Err: err.Error()}
+	}
+	// We got an exit code. Return it as structured data so the site can branch on
+	// code != 0 exactly as it does for its own direct-SSH path.
+	return Result{OK: res.Code == 0, Output: res.Stdout, Data: mustJSON(res), Err: errIfNonZero(res)}
+}
+
+func errIfNonZero(r *sshexec.Result) string {
+	if r.Code == 0 {
+		return ""
+	}
+	tail := r.Stderr
+	if tail == "" {
+		tail = r.Stdout
+	}
+	if len(tail) > 500 {
+		tail = tail[len(tail)-500:]
+	}
+	return fmt.Sprintf("install exited %d: %s", r.Code, tail)
+}
+
+func mustJSON(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
 
 func (e *Executor) runShell(ctx context.Context, raw json.RawMessage) Result {
 	var p struct {

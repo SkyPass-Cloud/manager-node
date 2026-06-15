@@ -17,6 +17,11 @@ const DefaultPath = "/etc/skypassd/config.json"
 // Config is the on-disk state of the agent. It is written once at install
 // time (bootstrap) and then updated as the node registers and rotates secrets.
 type Config struct {
+	// Role selects what this install does. "node" (default, empty) = manage the
+	// VPS it runs on. "ssh-handler" = accept install jobs from the site and SSH
+	// into *other* user VPSes to install the node agent on them.
+	Role string `json:"role,omitempty"`
+
 	// SiteBaseURL is the root of the website API, e.g. https://panel.example.com
 	SiteBaseURL string `json:"siteBaseUrl"`
 

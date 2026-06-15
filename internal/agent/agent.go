@@ -33,8 +33,13 @@ func New(cfg *config.Config, version string) *Agent {
 	}
 }
 
+// isHandler reports whether this install runs as an ssh-handler.
+func (a *Agent) isHandler() bool { return a.cfg.Role == "ssh-handler" }
+
 // Run starts the local server and the heartbeat loop, blocking until ctx is
-// cancelled (e.g. systemd stop / SIGTERM).
+// cancelled (e.g. systemd stop / SIGTERM). Both roles run the local HTTP server
+// (a node receives panel/ssl commands; a handler receives ssh.install jobs);
+// they differ only in which register/heartbeat endpoints they call.
 func (a *Agent) Run(ctx context.Context) error {
 	// Make sure the site knows about us before we start reporting.
 	a.ensureRegistered(ctx)
@@ -64,29 +69,48 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 // ensureRegistered registers with the site if we have no NodeID yet, retrying
-// a few times so a transient site outage at boot does not strand the node.
+// a few times so a transient site outage at boot does not strand the agent.
+// Handlers register on the handler endpoint and store the id in NodeID too.
 func (a *Agent) ensureRegistered(ctx context.Context) {
 	if a.cfg.NodeID != "" {
 		return
 	}
 	for attempt := 0; attempt < 5; attempt++ {
 		rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		resp, err := a.client.Register(rctx, api.RegisterRequest{
-			AgentID:    a.cfg.AgentID,
-			ListenPort: a.cfg.ListenPort,
-			Version:    a.version,
-		})
+		var id, rotated string
+		var err error
+		if a.isHandler() {
+			var resp *api.HandlerRegisterResponse
+			resp, err = a.client.RegisterHandler(rctx, api.HandlerRegisterRequest{
+				AgentID:    a.cfg.AgentID,
+				ListenPort: a.cfg.ListenPort,
+				Version:    a.version,
+			})
+			if resp != nil {
+				id = resp.HandlerID
+			}
+		} else {
+			var resp *api.RegisterResponse
+			resp, err = a.client.Register(rctx, api.RegisterRequest{
+				AgentID:    a.cfg.AgentID,
+				ListenPort: a.cfg.ListenPort,
+				Version:    a.version,
+			})
+			if resp != nil {
+				id, rotated = resp.NodeID, resp.Token
+			}
+		}
 		cancel()
 		if err == nil {
-			a.cfg.NodeID = resp.NodeID
-			if resp.Token != "" {
-				a.cfg.Token = resp.Token
+			a.cfg.NodeID = id
+			if rotated != "" {
+				a.cfg.Token = rotated
 				a.client = api.New(a.cfg.SiteBaseURL, a.cfg.Token, a.cfg.AgentID)
 			}
 			if err := a.cfg.Save(); err != nil {
-				log.Printf("warning: could not persist node id: %v", err)
+				log.Printf("warning: could not persist id: %v", err)
 			}
-			log.Printf("registered with site as node %s", a.cfg.NodeID)
+			log.Printf("registered with site as %s %s", a.roleName(), a.cfg.NodeID)
 			return
 		}
 		log.Printf("register attempt %d failed: %v", attempt+1, err)
@@ -99,10 +123,32 @@ func (a *Agent) ensureRegistered(ctx context.Context) {
 	log.Printf("could not register yet; will keep sending heartbeats and retry implicitly")
 }
 
-// beat sends one heartbeat and runs any commands the site returns.
+func (a *Agent) roleName() string {
+	if a.isHandler() {
+		return "ssh-handler"
+	}
+	return "node"
+}
+
+// beat sends one heartbeat. For a node it also runs any commands the site
+// returns; a handler reports its live job load and receives jobs via the local
+// HTTP server (push), so it pulls no commands here.
 func (a *Agent) beat(ctx context.Context) {
 	hctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+
+	if a.isHandler() {
+		if err := a.client.HandlerHeartbeat(hctx, api.HandlerHeartbeatRequest{
+			AgentID:    a.cfg.AgentID,
+			HandlerID:  a.cfg.NodeID,
+			ListenPort: a.cfg.ListenPort,
+			ActiveJobs: a.exec.ActiveJobs(),
+			Status:     system.Collect(a.version),
+		}); err != nil {
+			log.Printf("handler heartbeat failed: %v", err)
+		}
+		return
+	}
 
 	resp, err := a.client.Heartbeat(hctx, api.HeartbeatRequest{
 		AgentID:    a.cfg.AgentID,

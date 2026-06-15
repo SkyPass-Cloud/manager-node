@@ -7,6 +7,11 @@ VERSION="${1:-dev}"
 OUT="dist"
 mkdir -p "$OUT"
 
+# Resolve module deps (writes/updates go.sum). The handler mode pulls in
+# golang.org/x/crypto/ssh, so go.sum is generated here rather than committed.
+echo "==> resolving modules"
+go mod tidy
+
 LDFLAGS="-s -w -X main.version=${VERSION}"
 
 build() {
