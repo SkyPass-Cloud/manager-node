@@ -37,26 +37,76 @@ type DNSCheck struct {
 	Message     string   `json:"message"`
 }
 
-// EnsureACME installs acme.sh if it is missing. Idempotent.
+// EnsureACME installs acme.sh if it is missing. Idempotent. After installing it
+// VERIFIES the acme.sh binary actually exists, because the official installer can
+// exit 0 without installing (missing deps, or a no-op invocation) — which later
+// surfaces as "fork/exec /root/.acme.sh/acme.sh: no such file or directory".
 func EnsureACME(ctx context.Context, accountEmail string) error {
 	if _, err := os.Stat(acmeBin); err == nil {
 		return nil
 	}
-	// curl https://get.acme.sh | sh — the official bootstrap.
+	// acme.sh needs curl/wget plus socat for the standalone HTTP-01 challenge.
+	// Install them best-effort so a minimal box still works.
+	ensureDeps(ctx)
+
 	if _, err := exec.LookPath("curl"); err != nil {
-		return fmt.Errorf("curl is required to install acme.sh: %w", err)
+		if _, werr := exec.LookPath("wget"); werr != nil {
+			return fmt.Errorf("curl or wget is required to install acme.sh")
+		}
 	}
 	email := accountEmail
 	if email == "" {
 		email = "admin@" + hostnameOrLocal()
 	}
-	script := fmt.Sprintf("curl -fsSL https://get.acme.sh | sh -s email=%s", shellQuote(email))
-	if out, err := runCtx(ctx, 3*time.Minute, "/bin/sh", "-c", script); err != nil {
-		return fmt.Errorf("install acme.sh: %v: %s", err, out)
+	// Prefer the official one-line bootstrap; fall back to wget if curl is absent.
+	var script string
+	if _, err := exec.LookPath("curl"); err == nil {
+		script = fmt.Sprintf("curl -fsSL https://get.acme.sh | sh -s email=%s", shellQuote(email))
+	} else {
+		script = fmt.Sprintf("wget -qO- https://get.acme.sh | sh -s email=%s", shellQuote(email))
+	}
+	out, err := runCtx(ctx, 3*time.Minute, "/bin/sh", "-c", script)
+	if err != nil {
+		return fmt.Errorf("install acme.sh: %v: %s", err, strings.TrimSpace(out))
+	}
+	// Verify the installer actually produced the binary. If not, the install was a
+	// no-op (e.g. missing git/socat) — fail loudly with the installer output rather
+	// than letting a later exec fail with a confusing "no such file or directory".
+	if _, statErr := os.Stat(acmeBin); statErr != nil {
+		return fmt.Errorf("acme.sh did not install to %s after bootstrap; installer output: %s",
+			acmeBin, strings.TrimSpace(out))
 	}
 	// Use Let's Encrypt as the default CA.
 	_, _ = runCtx(ctx, time.Minute, acmeBin, "--set-default-ca", "--server", "letsencrypt")
 	return nil
+}
+
+// ensureDeps best-effort installs curl, socat and the CA store using whatever
+// package manager the distro has. Errors are ignored: if a tool is already
+// present or the box has no internet, EnsureACME's own checks will catch it.
+func ensureDeps(ctx context.Context) {
+	// Already have everything we need?
+	_, curlErr := exec.LookPath("curl")
+	_, socatErr := exec.LookPath("socat")
+	if curlErr == nil && socatErr == nil {
+		return
+	}
+	switch {
+	case hasCmd("apt-get"):
+		_, _ = runCtx(ctx, 2*time.Minute, "/bin/sh", "-c",
+			"DEBIAN_FRONTEND=noninteractive apt-get update -y && DEBIAN_FRONTEND=noninteractive apt-get install -y curl socat ca-certificates")
+	case hasCmd("dnf"):
+		_, _ = runCtx(ctx, 2*time.Minute, "dnf", "install", "-y", "curl", "socat", "ca-certificates")
+	case hasCmd("yum"):
+		_, _ = runCtx(ctx, 2*time.Minute, "yum", "install", "-y", "curl", "socat", "ca-certificates")
+	case hasCmd("apk"):
+		_, _ = runCtx(ctx, 2*time.Minute, "apk", "add", "--no-cache", "curl", "socat", "ca-certificates", "openssl")
+	}
+}
+
+func hasCmd(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
 }
 
 // CheckDNS resolves the domain and compares against the server's public IPs.

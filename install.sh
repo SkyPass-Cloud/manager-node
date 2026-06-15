@@ -70,14 +70,26 @@ else
   exit 1
 fi
 
+# Re-run detection: if config already exists this is an UPDATE, not a fresh
+# install. The install subcommand below is idempotent and preserves the existing
+# port / agentId / nodeId, so re-running this script simply swaps the binary and
+# restarts — exactly the "run again to update" behaviour we want.
+if [[ -f "${CONFIG_DIR}/config.json" ]]; then
+  echo "==> existing install found — updating in place (config preserved)"
+fi
+
 echo "==> installing binary to ${BIN_PATH}"
 install -m 0755 "$TMP" "$BIN_PATH"
 rm -f "$TMP"
 
+# Friendly alias: 'skypass-manager' opens the interactive menu.
+ln -sf "$BIN_PATH" "${BIN_DIR}/skypass-manager"
+
 echo "==> writing config and opening firewall"
 mkdir -p "$CONFIG_DIR"
 chmod 700 "$CONFIG_DIR"
-INSTALL_ARGS=(--site "$SITE" --token "$TOKEN" --role "$ROLE")
+# Pass --binary-url so the agent records it for self-update (skypassd update).
+INSTALL_ARGS=(--site "$SITE" --token "$TOKEN" --role "$ROLE" --binary-url "$BINARY_URL")
 [[ -n "$ACME_EMAIL" ]] && INSTALL_ARGS+=(--acme-email "$ACME_EMAIL")
 "$BIN_PATH" install "${INSTALL_ARGS[@]}"
 
@@ -108,3 +120,6 @@ systemctl restart skypassd
 
 echo "==> done. status:"
 systemctl --no-pager status skypassd || true
+
+echo
+echo "Manage this node anytime with:  skypass-manager"

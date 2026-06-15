@@ -7,17 +7,21 @@ This is the node agent that handles things on SkyPass VPS instances.
 ## Layout
 
 ```
-cmd/skypassd/main.go            CLI: install | run | status | uninstall | version
+cmd/skypassd/main.go            CLI: install | run | status | update | uninstall | version | (no args = menu)
 internal/config                 on-disk config (/etc/skypassd/config.json)
+internal/cli                    interactive 'skypass-manager' menu (status/logs/update/restart)
+internal/updater                self-update: download latest binary, atomic swap, restart
 internal/system                 host status snapshot (cpu/mem/disk/uptime/load)
 internal/portpick               picks a free port from the allowed ranges
 internal/firewall               detects ufw/firewalld/iptables, opens/closes the port
 internal/api                    site API client (register / heartbeat / result)
 internal/server                 local HTTP server the site pushes commands to
 internal/executor               dispatches command types (extension point)
+internal/ssl                    acme.sh wrapper (installs acme.sh + deps, issues certs)
 internal/agent                  ties it together: register + heartbeat loop
 systemd/skypassd.service systemd unit
-install.sh                      GitHub-based installer run over SSH
+install.sh                      GitHub-based installer run over SSH (idempotent: re-run = update)
+update.sh                       one-line updater: swaps binary only, never touches config
 build.sh                        cross-compile to dist/
 ```
 
@@ -25,6 +29,32 @@ build.sh                        cross-compile to dist/
 
 The local server only ever binds a port in these ranges (policy):
 `19302-19309` and `27014-27050`. `install` picks a free one automatically.
+
+## Managing the node (interactive)
+
+On the VPS, run `skypass-manager` (or `skypassd` with no args) for a menu:
+service status, live/recent logs, restart/stop/start, **update to latest**,
+show config, and uninstall. It wraps `systemctl` and `journalctl -u skypassd`
+so the operator never has to remember them. Logs are tagged `[node-manager]`.
+
+### Updating
+
+One line, no token, config never changes — works on any node OR handler:
+
+```
+curl -fsSL https://raw.githubusercontent.com/SkyPass-Cloud/manager-node/main/update.sh | bash
+```
+
+`update.sh` downloads the latest arch-matched binary, verifies it runs, swaps it
+over `/usr/local/bin/skypassd`, and restarts the service. It only requires that a
+config already exists; it never reads or rewrites `/etc/skypassd/config.json`
+(token, port, agentId, nodeId, role all preserved). This also works on the OLD
+binary, so it's the bootstrap to get nodes onto the new self-updating one.
+
+Equivalent paths once the new binary is installed:
+- `skypassd update` — self-update from the `binaryUrl` recorded in config.
+- `skypass-manager` → menu option 7.
+- Re-running `install.sh` (detects an existing install and preserves config).
 
 ## Auth
 

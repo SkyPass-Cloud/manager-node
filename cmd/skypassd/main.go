@@ -8,11 +8,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/SkyPass-Cloud/manager-node/internal/agent"
+	"github.com/SkyPass-Cloud/manager-node/internal/cli"
 	"github.com/SkyPass-Cloud/manager-node/internal/config"
 	"github.com/SkyPass-Cloud/manager-node/internal/firewall"
 	"github.com/SkyPass-Cloud/manager-node/internal/portpick"
+	"github.com/SkyPass-Cloud/manager-node/internal/updater"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".
@@ -25,9 +28,11 @@ func main() {
 	log.SetPrefix("[node-manager] ")
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 
+	// No subcommand → open the interactive manager menu. This is what an operator
+	// gets when they just type `skypass-manager` (or `skypassd`) on the box.
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+		cli.Run(version)
+		return
 	}
 	switch os.Args[1] {
 	case "run":
@@ -38,6 +43,10 @@ func main() {
 		cmdUninstall(os.Args[2:])
 	case "status":
 		cmdStatus(os.Args[2:])
+	case "update":
+		cmdUpdate(os.Args[2:])
+	case "menu", "ui":
+		cli.Run(version)
 	case "version", "-v", "--version":
 		fmt.Println("skypassd", version)
 	case "help", "-h", "--help":
@@ -53,16 +62,22 @@ func usage() {
 	fmt.Print(`skypassd - SkyPass node agent
 
 Usage:
-  skypassd install --site <url> --token <token> [--config <path>]
-      Register config, pick a port, open the firewall. Run once at setup.
+  skypassd                     Open the interactive manager (status, logs, update).
+  skypassd install --site <url> --token <token> [--role node|ssh-handler]
+                               [--binary-url <url>] [--config <path>]
+      Register config, pick a port, open the firewall. Safe to re-run (updates in place).
   skypassd run [--config <path>]
       Run the agent in the foreground (systemd ExecStart target).
   skypassd status [--config <path>]
       Print local config and a one-shot host status snapshot.
+  skypassd update [--binary-url <url>] [--config <path>]
+      Download the latest binary and restart the service.
   skypassd uninstall [--config <path>]
       Close the firewall port and remove local config.
   skypassd version
       Print the agent version.
+
+Tip: just run 'skypass-manager' (or 'skypassd') with no arguments for the menu.
 `)
 }
 
@@ -77,6 +92,7 @@ func cmdInstall(args []string) {
 	port := fs.Int("port", 0, "force a specific port (must be in allowed ranges)")
 	acmeEmail := fs.String("acme-email", "", "contact email for Let's Encrypt")
 	role := fs.String("role", "node", "role: 'node' (manage this VPS) or 'ssh-handler' (install onto other VPSes)")
+	binaryURL := fs.String("binary-url", "", "download URL the binary came from (stored for self-update)")
 	_ = fs.Parse(args)
 
 	if *site == "" || *token == "" {
@@ -100,6 +116,11 @@ func cmdInstall(args []string) {
 	}
 	if *acmeEmail != "" {
 		cfg.AcmeEmail = *acmeEmail
+	}
+	// Record the binary URL so `skypassd update` can self-update later without the
+	// operator re-supplying it. Preserve an existing one if not passed.
+	if *binaryURL != "" {
+		cfg.BinaryURL = *binaryURL
 	}
 	cfg.EnsureAgentID()
 
@@ -132,6 +153,40 @@ func cmdInstall(args []string) {
 	}
 
 	fmt.Printf("installed: role=%s agentId=%s port=%d config=%s\n", *role, cfg.AgentID, cfg.ListenPort, cfg.Path())
+}
+
+// cmdUpdate downloads the latest binary (from the URL stored at install time, or
+// one passed with --binary-url) and restarts the service.
+func cmdUpdate(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	path := fs.String("config", config.DefaultPath, "config file path")
+	binaryURL := fs.String("binary-url", "", "override the download URL (defaults to the one stored at install)")
+	_ = fs.Parse(args)
+
+	cfg, err := config.Load(*path)
+	if err != nil && err != config.ErrNotFound {
+		fatal("load config", err)
+	}
+	url := *binaryURL
+	if url == "" {
+		url = cfg.BinaryURL
+	}
+	if url == "" {
+		fatal("update", fmt.Errorf("no binary URL recorded; pass --binary-url or re-run install"))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	newVer, err := updater.SelfUpdate(ctx, url, "skypassd")
+	if err != nil {
+		fatal("update", err)
+	}
+	// Persist the URL if it was only supplied now.
+	if cfg.BinaryURL == "" && url != "" {
+		cfg.BinaryURL = url
+		_ = cfg.Save()
+	}
+	fmt.Printf("updated to %s and restarted skypassd\n", newVer)
 }
 
 func cmdRun(args []string) {

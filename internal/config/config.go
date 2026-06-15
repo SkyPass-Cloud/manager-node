@@ -47,6 +47,11 @@ type Config struct {
 	// AcmeEmail is the contact email acme.sh / Let's Encrypt registers with.
 	AcmeEmail string `json:"acmeEmail"`
 
+	// BinaryURL is the download URL the agent was installed from (may contain a
+	// literal {arch} token). Stored so `skypassd update` can self-update without
+	// the operator re-supplying it. Set by install.sh / the install command.
+	BinaryURL string `json:"binaryUrl,omitempty"`
+
 	path string     // not serialised: where this config was loaded from
 	mu   sync.Mutex // guards Save against concurrent writers
 }
