@@ -74,31 +74,6 @@ Needs Go 1.22+. From this directory:
 On Windows use Git Bash, or run the equivalent `go build` with
 `GOOS=linux GOARCH=amd64 CGO_ENABLED=0`.
 
-## Publishing the binary
-
-`git tag v1.0.0 && git push origin v1.0.0` triggers GitHub Actions, which builds
-both binaries and attaches them to a Release at:
-
-```
-https://github.com/SkyPass-Cloud/manager-node/releases/latest/download/skypassd-linux-{arch}
-```
-
-## Install on a VPS (what the site does over SSH)
-
-The backend runs this automatically (it sources `--binary-url` from its own
-`SKYPASS_NODE_BINARY_URL` env). To install by hand:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SkyPass-Cloud/manager-node/main/install.sh \
-  | bash -s -- \
-      --site https://api.skypass.cloud \
-      --token <PER_NODE_TOKEN> \
-      --binary-url 'https://github.com/SkyPass-Cloud/manager-node/releases/latest/download/skypassd-linux-{arch}'
-```
-
-This downloads the binary, installs to `/usr/local/bin/skypassd`, writes
-`/etc/skypassd/config.json`, opens the firewall port, and enables the
-systemd service.
 
 ## Roles: node vs ssh-handler
 
